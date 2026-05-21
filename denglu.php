@@ -7,59 +7,99 @@ $name = "";
 $password = "";
 $x = "";
 
+// 记住用户名
 if (isset($_COOKIE['remember_name'])) {
     $name = $_COOKIE['remember_name'];
 }
 
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
-    $name = isset($_POST["name"]) ? trim($_POST["name"]) : "";
-    $password = isset($_POST["password"]) ? trim($_POST["password"]) : "";
-    $remember = isset($_POST['remember']) ? $_POST['remember'] : "";
+// ============== 登录失败锁定功能（新增）==============
+$lock_key = 'login_lock_' . $_SERVER['REMOTE_ADDR'];
+$attempt_key = 'login_attempt_' . $_SERVER['REMOTE_ADDR'];
+$max_attempts = 5;    // 最多输错5次
+$lock_time = 600;      // 锁定10分钟（秒）
 
-    if(empty($name) || empty($password)){
+// 检查是否被锁定
+if (isset($_SESSION[$lock_key]) && $_SESSION[$lock_key] > time()) {
+    $left = $_SESSION[$lock_key] - time();
+    $x = "登录失败次数过多，请" . ceil($left/60) . "分钟后再试！";
+}
+
+// ============== 登录提交 ==============
+if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_SESSION[$lock_key])) {
+    $name = trim($_POST["name"] ?? "");
+    $password = trim($_POST["password"] ?? "");
+    $remember = $_POST['remember'] ?? "";
+
+    if (empty($name) || empty($password)) {
         $x = "用户名或密码不能为空！";
-    }else{
-        $sql = "SELECT * FROM yonghu WHERE name = :name ";
-        $stmt = $pdo->prepare($sql);
+    } else {
+        // 查询用户
+        $stmt = $pdo->prepare("SELECT * FROM yonghu WHERE name = :name");
         $stmt->execute([':name' => $name]);
-        if($stmt->rowCount() > 0){
+
+        if ($stmt->rowCount() > 0) {
             $row = $stmt->fetch();
 
+            // 密码验证
             if (password_verify($password, $row['password'])) {
-                if($remember == 1){
+                // 登录成功：清除失败次数
+                unset($_SESSION[$attempt_key], $_SESSION[$lock_key]);
+
+                // 记住用户
+                if ($remember == 1) {
                     setcookie("remember_name", $name, time() + 86400 * 7);
-                }else{
+                } else {
                     setcookie("remember_name", "", time() - 3600);
                 }
 
-                $_SESSION['name'] = $name;
-                $_SESSION['admin'] = ($name === 'admin');
+                // 写入SESSION
+                $_SESSION['id'] = $row['id'];
+                $_SESSION['name'] = $row['name'];
+                $_SESSION['email'] = $row['email'] ?? '';
+                $_SESSION['admin'] = ($row['is_admin'] == 1); // 用数据库字段更安全
 
-                header('location:huanying.php');
+                // ============== 记录登录日志（新增）==============
+                $ip = $_SERVER['REMOTE_ADDR'];
+                $time = date('Y-m-d H:i:s');
+                $pdo->prepare("INSERT INTO login_log(username,ip,login_time) VALUES(?,?,?)")
+                        ->execute([$name, $ip, $time]);
+
+                // ============== 区分跳转（新增）==============
+                if ($_SESSION['admin']) {
+                    header("Location: admin.php"); // 管理员去后台
+                } else {
+                    header("Location: huanying.php"); // 普通用户去欢迎页
+                }
                 exit();
-            }else{
+            } else {
                 $x = "密码错误";
+                // 失败次数+1
+                $_SESSION[$attempt_key] = ($_SESSION[$attempt_key] ?? 0) + 1;
+
+                // 达到上限 → 锁定
+                if ($_SESSION[$attempt_key] >= $max_attempts) {
+                    $_SESSION[$lock_key] = time() + $lock_time;
+                    $x = "输错5次，已锁定10分钟！";
+                }
             }
-        }else{
+        } else {
             $x = "用户不存在，请先注册！";
         }
     }
 }
 ?>
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>登录页面</title>
+    <title>用户登录</title>
     <style>
-        /* 全局样式初始化：清除默认内外边距，统一盒模型 */
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
             font-family: "Microsoft YaHei", sans-serif;
         }
-        /* 页面全屏，隐藏滚动条 */
         html, body {
             width: 100%;
             height: 100%;
@@ -68,7 +108,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         body {
             color: #104e7a;
         }
-        /* 视频背景样式：全屏固定定位，置于底层 */
         .video-bg {
             position: fixed;
             left: 0;
@@ -80,13 +119,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             object-position: center;
             opacity: 1;
         }
-        /* 登录框容器：页面正中央、半透明、圆角、阴影 */
         .container {
             position: absolute;
             left: 50%;
             top: 50%;
-            transform: translate(-50%, -50%); /* 居中核心代码 */
-            background: rgb(155 155 155 / 0.5); /* 半透明背景 */
+            transform: translate(-50%, -50%);
+            background: rgb(155 155 155 / 0.5);
             border-radius: 18px;
             box-shadow: 0 6px 20px rgba(0, 120, 200, 1);
             padding: 40px;
@@ -95,22 +133,15 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             text-align: center;
             border: 2px solid rgb(0 21 255 / 0.2);
         }
-
-        /* 大标题样式 */
         h1 {
             font-family: "华文楷体", sans-serif;
             color: #000000;
             margin-bottom: 25px;
             font-size: 50px;
-
         }
-
-        /* 表单左对齐 */
         form {
             text-align: left;
         }
-
-        /* 表单标签样式 */
         form label {
             font-family: "华文楷体", sans-serif;
             display: inline-block;
@@ -118,8 +149,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             color: #000;
             font-size: 20px;
         }
-
-        /* 输入框样式 */
         form input[type="text"],
         form input[type="password"] {
             width: 100%;
@@ -131,14 +160,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             transition: border 0.3s;
             background: #f7fbff;
         }
-
-        /* 输入框获得焦点时高亮 */
         form input:focus {
             border-color: #0099dd;
             box-shadow: 0 0 6px rgba(0, 153, 221, 0.25);
         }
-
-        /* 登录按钮样式 */
         button {
             width: 100%;
             background-color: #0099dd;
@@ -150,40 +175,30 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             font-size: 16px;
             transition: all 0.3s ease;
         }
-
-        /* 按钮鼠标悬浮效果 */
         button:hover {
             background-color: #0077bb;
             transform: translateY(-2px);
         }
-
-        /* 记住用户 + 忘记密码 行布局 */
         .remember-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin: 5px 0 15px;
         }
-
-        /* 链接样式 */
         a {
             color: #00599c;
             text-decoration: none;
         }
-
-        /* 链接悬浮下划线 */
         a:hover {
             text-decoration: underline;
         }
-
-        /* 错误提示文字样式 */
         p {
             margin-top: 15px;
             font-size: 15px;
             text-align: center;
             color: red;
+            font-weight: bold;
         }
-
     </style>
 </head>
 <body>
@@ -204,14 +219,16 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
         <div class="remember-row">
             <label>
-                <input type="checkbox" name="remember" id="remember" value="1"
-                        <?php if(isset($_COOKIE['rememb er_name'])) echo 'checked';?>>
+                <input type="checkbox" name="remember" value="1"
+                        <?php if(isset($_COOKIE['remember_name'])) echo 'checked';?>>
                 记住用户
             </label>
             <a href="wangji.php">忘记密码？</a>
         </div>
+
         <button type="submit">登录用户</button><br><br>
-        <div style="text-align: center; color: #000; margin-top: 10px;">
+
+        <div style="text-align:center; color:#000; margin-top:10px;">
             还没有账号？<a href="zhuce.php">立即注册</a>
         </div>
     </form>
